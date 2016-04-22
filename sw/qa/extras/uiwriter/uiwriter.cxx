@@ -102,6 +102,7 @@
 #include <comphelper/configurationhelper.hxx>
 #include <editeng/unolingu.hxx>
 #include <config_features.h>
+#include <config_test.h>
 
 static const char* const DATA_DIRECTORY = "/sw/qa/extras/uiwriter/data/";
 
@@ -3561,6 +3562,7 @@ void SwUiWriterTest::testTdf77014()
 
     aHandler.clear();
 
+#if ! TEST_FONTS_MISSING
     // skip empty paragraph
     pTextFrame = static_cast<SwTextFrame*>(pTextFrame->GetNext());
 
@@ -3660,6 +3662,7 @@ void SwUiWriterTest::testTdf77014()
         rPortionItem = aHandler.mPortionItems[7];
         CPPUNIT_ASSERT_EQUAL(OUString("finish"), rPortionItem.msItemType);
     }
+#endif
 }
 
 void SwUiWriterTest::testTdf92648()
