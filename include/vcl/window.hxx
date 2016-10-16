@@ -139,6 +139,7 @@ enum class GetWindowType
     Border                   = 12,
     FirstTopWindowChild      = 13,
     NextTopWindowSibling     = 16,
+    CompoundParent           = 17,
 };
 
 // Flags for setPosSizePixel()
