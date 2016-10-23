@@ -23,6 +23,7 @@
 #include <comphelper/string.hxx>
 #include <comphelper/processfactory.hxx>
 #include <cppuhelper/weakref.hxx>
+#include <vcl/graph.hxx>
 
 #include <com/sun/star/frame/ModuleManager.hpp>
 #include <com/sun/star/frame/theUICommandDescription.hpp>

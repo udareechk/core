@@ -37,6 +37,7 @@
 #include <tools/urlobj.hxx>
 #include <tools/debug.hxx>
 #include <vcl/svapp.hxx>
+#include <vcl/graph.hxx>
 #include <sfx2/docfile.hxx>
 #include <sfx2/objsh.hxx>
 #include <osl/mutex.hxx>
