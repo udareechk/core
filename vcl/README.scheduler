@@ -1,0 +1,122 @@
+= Introduction =
+
+The VCL scheduler handles LOs primary event queue.
+It is simple by design, currently just a singly-linked list.
+
+The scheduler has the following behaviour:
+
+B.1. Tasks are scheduled just priority based
+B.2. Implicitly cooperative AKA non-preemptive
+B.3. It's not "fair" in any way (a consequence of B.2)
+B.4. Tasks are handled round-robin (per priority)
+B.5. Higher priorities have lower values
+B.6. A small set of priorities instead of an flexible value AKA int
+
+There are some consequences due to this design.
+
+C.1. Higher priorority tasks starve lower priority tasks
+     As long as a higher task is available, lower tasks are never run!
+     See Anti-pattern.
+
+C.2. Tasks should be split into sensible blocks
+     If this can't really be done, process pending tasks by calling Application::Reschedule(). Or use a thread.
+
+C.3. This is not an OS scheduler
+     There is no real way to "fix" B.2. and B.3. If you need to do an preemptive task, use a thread!
+     OS schedulers need to be "fair". There are complex approaches, like RCU, priority inversion, priority inheritance, etc. to fix C.1., but most aren't useable in userspace (there even is a userspace RCU library, FWIW).
+
+
+= Driving the scheduler AKA the system timer =
+
+Scheduling is done using a single system timer (SalTimer)
+
+  * There is just one system timer, which drives the LO event loop
+  * The system timer is supposed to be a single-shot timer, restarted by the Scheduler as approriate
+  * The timer must just run in the main window thread
+  * Messages are processed in order, by priority
+  * The scheduler runs with the Solar mutex acquired
+
+
+= Anti-pattern: Try detecting "real idle" time =
+
+Even if the application thinks it is currently idle, this may change just a millisecond later. All longer tasks should be either interruptable, call Application::Reschedule() to process pending events or even use a thread for blocking tasks, like I/O.
+
+You may want to schedule instant tasks, which have a dependency on a state or function. To prevent busy polling, you can sublass Idle and override the UpdateMinPeriod() function. A call of this function should be very quick. For an example have a look at SwDocIdle, which prevents the idle to act on busy documents, currently used by mail merge.
+
+
+= Anti-pattern: Dependencies via (fine grained) priorities =
+
+"Idle 1" should run before "Idle 2", therefore give "Idle 1" a higher priority then "Idle 2".
+This just works correct for low frequency idles, but otherwise always breaks!
+
+If you have some longer work - even if it can be split by into schedulable, smaller blocks - you normally don't want to schedule it with a non-default priority, as it starves all lower priority tasks. Even if a block was processed in "Idle 1", it is scheduled with the same (higher) priority again. Changing the "Idle" to a "Timer" also won't work, as this breaks the dependency.
+
+What is needed is task based dependency handling, so if "Task 1" is done, it has to start "Task 2" and if "Task 1" is started again, it has to stop "Task 2". This currently has to be done by the implementor, but this feature can be added to the scheduler reasonably.
+
+
+= TODOs and ideas =
+
+== Move memory handling of Tasks into the scheduler ==
+
+Currently the creator of a Task objects handles the memory of the task object. Actually a lot of Tasks are simply embedded into other objects. This makes multi-threaded handling of these object complex and the locking really hard. And there are also some special cases, where the invoking Task deletes itself at the end of its Invoke() function.
+One way this is handled in other main loop implementations, like glib, is to refer to the Task just by an ID. So there is no direct interaction with the object and it'S actually forbidden to modify most of the tasks parameters after scheduling, e.g. a timer has to be destroyed and recreated to change the timeout.
+In teh end nothing happens, if an ID is already missing. The scheduler is free to release a Task without any interference of a Task object.
+
+1. All tasks would need to be unembedded and become pointers
+2.1. Change the Task to be reference counted, or
+2.2. Create a Task object and transfer it into the scheduler. If you want to change it, you would have to receeve the Task from the scheduler and then push it again. This probably could be incorporated in the Start() and Stop() functions.
+
+== Locking (mp-sc) ==
+
+LO currently crashes, when it adds new events to the scheduler without holding the SolarMutex.
+
+Locking needs to be implemented for multiple producers and a single consumer.
+
+While the consumer can process any task in the list, a producer is just allowed to append a task.
+
+The scheduler is implicitly deinitialized, when VCL start deinitialization starts setting ImplSVData::mbDeInit to true.
+At this point no more tasks will be scheduled.
+
+The scheduler has to handle locking for the following situations:
+
+  1. when changing the first or the last element
+    The ImplSVData::mpAppendMutex protects ImplSVData::mpFirstSchedulerData and ImplSVData::mpLastSchedulerData pointers
+    1.1 when adding an element
+    1.2 when removing the last element
+    1.3 when removing the first element
+  2. when changing the list of freed scheduler objects
+    The ImplSVData::mpFreeListMutex protects the ImplSVData::mpFreeSchedulerData pointer
+  3. when invoking a task
+    The ImplSVData::mpInvokeMutex and ImplSVData::maInvokeCondition protect the ImplSchedulerData::mbInScheduler boolean and ImplSchedulerData::mpScheduler pointer
+    3.1 prevent dispose of the Scheduler object while invoked
+    3.2 prevent detaching ImplSchedulerData from the Scheduler object
+
+The scheduler must always only run in the main thread.
+
+== Task dependencies AKA children ==
+
+Every task can have a list of children / a child. This is just an idea and currently has no known users emulating the behaviour.
+
+ * When a task is stopped, the children are started.
+ * When a task is started, the children are stopped.
+
+== Per priority time-sorted queues ==
+
+This would result in O(1) scheduler. This kind of scheduler was used in the Linux kernel for some time (search Ingo Molinars O(1) scheduler). This can be a scheduling optimization, which would prevent walking longer event list. But quite probably the management overhead would be too large, as we have many one-shot events.
+
+To find the next task the scheduler just walks the (constant) list of priority queues and schedules the first ready event of any queue.
+
+The downside of this approach: Insert / Start / Reschedule(for "auto" tasks) now need O(log(n)) to find the position in the queue, instead of O(1) for a simple append.
+
+== Always process all (higher priority) pending events ==
+
+Currently Application::Reschedule() processes a single event or "all" events, with "all" defined as "100" events in most backends. This already is "ignored" by the KDE4 backend, as Qt defines its ProcessPendingEvents() as always processing all pending events (there are ways to skip event classes, but no easy way to process just a single event).
+
+== Annotate task dependencies ==
+
+Currently no formal annotation exists to describe dependencies between Tasks. I couldn't find any documentation, why a task has a certain priority.
+This could probably be improved by adding a way to annotate Tasks and create trees / groups of tasks.
+
+== Easyhack: move Task and Scheduler into vcl namespace ==
+
+Create it after the scheduler patchset was merged and add reference
