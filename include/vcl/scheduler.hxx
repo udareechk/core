@@ -21,16 +21,16 @@
 #define INCLUDED_VCL_SCHEDULER_HXX
 
 #include <vcl/dllapi.h>
-#include <iostream>
+#include <memory>
 
 class Task;
+struct TaskImpl;
 
-class VCL_DLLPUBLIC Scheduler
+class VCL_DLLPUBLIC Scheduler final
 {
     friend class Task;
     Scheduler() = delete;
 
-protected:
     static void ImplStartTimer ( sal_uInt64 nMS, bool bForce = false );
 
 public:
@@ -81,15 +81,12 @@ class VCL_DLLPUBLIC Task
     friend class Scheduler;
     friend struct ImplSchedulerData;
 
-    ImplSchedulerData *mpSchedulerData; /// Pointer to the element in scheduler list
-    const sal_Char    *mpDebugName;     /// Useful for debugging
-    TaskPriority       mePriority;      /// Task priority
-    bool               mbActive;        /// Currently in the scheduler
+    std::unique_ptr<TaskImpl>  mpImpl;  ///< Hide implementation details
 
 protected:
     static void StartTimer( sal_uInt64 nMS );
 
-    const ImplSchedulerData* GetSchedulerData() const { return mpSchedulerData; }
+    const ImplSchedulerData* GetSchedulerData() const;
 
     virtual void SetDeletionFlags();
     /// Is this item ready to be dispatched at nTimeNow
@@ -108,11 +105,11 @@ public:
     virtual ~Task();
     Task& operator=( const Task& rTask );
 
-    void            SetPriority(TaskPriority ePriority) { mePriority = ePriority; }
-    TaskPriority    GetPriority() const { return mePriority; }
+    void            SetPriority(TaskPriority ePriority);
+    TaskPriority    GetPriority() const;
 
-    void            SetDebugName( const sal_Char *pDebugName ) { mpDebugName = pDebugName; }
-    const char     *GetDebugName() const { return mpDebugName; }
+    void            SetDebugName( const sal_Char *pDebugName );
+    const char     *GetDebugName() const;
 
     // Call handler
     virtual void    Invoke() = 0;
@@ -120,20 +117,8 @@ public:
     virtual void    Start();
     void            Stop();
 
-    bool            IsActive() const { return mbActive; }
+    bool            IsActive() const;
 };
-
-template< typename charT, typename traits >
-inline std::basic_ostream<charT, traits> & operator <<(
-    std::basic_ostream<charT, traits> & stream, const Task& task )
-{
-    stream << "a: " << task.IsActive() << " p: " << (int) task.GetPriority();
-    const sal_Char *name = task.GetDebugName();
-    if( nullptr == name )
-        return stream << " (nullptr)";
-    else
-        return stream << " " << name;
-}
 
 #endif // INCLUDED_VCL_SCHEDULER_HXX
 

@@ -21,11 +21,24 @@
 #include <tools/time.hxx>
 #include <vcl/idle.hxx>
 #include <saltimer.hxx>
+#include <schedulerimpl.hxx>
 #include <svdata.hxx>
 #include <salinst.hxx>
 
 namespace {
 const sal_uInt64 MaximumTimeoutMs = 1000 * 60; // 1 minute
+
+template< typename charT, typename traits >
+inline std::basic_ostream<charT, traits> & operator <<(
+    std::basic_ostream<charT, traits> & stream, const Task& task )
+{
+    stream << "a: " << task.IsActive() << " p: " << (int) task.GetPriority();
+    const sal_Char *name = task.GetDebugName();
+    if( nullptr == name )
+        return stream << " (nullptr)";
+    else
+        return stream << " " << name;
+}
 
 /**
  * clang won't compile this in the Timer.hxx header, even with a class Idle
@@ -59,7 +72,16 @@ inline std::basic_ostream<charT, traits> & operator <<(
     return stream << static_cast<const Timer*>( &idle );
 }
 
+template< typename charT, typename traits >
+inline std::basic_ostream<charT, traits> & operator <<(
+    std::basic_ostream<charT, traits> & stream, const ImplSchedulerData& data )
+{
+    stream << " i: " << data.mbInScheduler
+           << " d: " << data.mbDelete;
+    return stream;
 }
+
+} // end anonymous namespace
 
 void ImplSchedulerData::Invoke()
 {
@@ -73,7 +95,7 @@ void ImplSchedulerData::Invoke()
     mpTask->SetDeletionFlags();
 
     // tdf#92036 Reset the period to avoid re-firing immediately.
-    mpTask->mpSchedulerData->mnUpdateTime = tools::Time::GetSystemTicks();
+    mpTask->mpImpl->mpSchedulerData->mnUpdateTime = tools::Time::GetSystemTicks();
 
     // invoke it
     mbInScheduler = true;
@@ -95,8 +117,8 @@ void Scheduler::ImplDeInitScheduler()
     {
         if ( pSchedulerData->mpTask )
         {
-            pSchedulerData->mpTask->mbActive = false;
-            pSchedulerData->mpTask->mpSchedulerData = nullptr;
+            pSchedulerData->mpTask->mpImpl->mbActive = false;
+            pSchedulerData->mpTask->mpImpl->mpSchedulerData = nullptr;
         }
         ImplSchedulerData* pDeleteSchedulerData = pSchedulerData;
         pSchedulerData = pSchedulerData->mpNext;
@@ -244,7 +266,7 @@ sal_uInt64 Scheduler::CalculateMinimumTimeout( bool &bHasActiveIdles )
             else
                 rSchedCtx.mpFirstSchedulerData = pSchedulerData->mpNext;
             if ( pSchedulerData->mpTask )
-                pSchedulerData->mpTask->mpSchedulerData = nullptr;
+                pSchedulerData->mpTask->mpImpl->mpSchedulerData = nullptr;
             pNext = pSchedulerData->mpNext;
             delete pSchedulerData;
         }
@@ -292,10 +314,9 @@ sal_uInt64 Scheduler::CalculateMinimumTimeout( bool &bHasActiveIdles )
     return nMinPeriod;
 }
 
-const char *ImplSchedulerData::GetDebugName() const
+const ImplSchedulerData* Task::GetSchedulerData() const
 {
-    return mpTask && mpTask->GetDebugName() ?
-        mpTask->GetDebugName() : "unknown";
+    return mpImpl->mpSchedulerData;
 }
 
 void Task::StartTimer( sal_uInt64 nMS )
@@ -305,8 +326,28 @@ void Task::StartTimer( sal_uInt64 nMS )
 
 void Task::SetDeletionFlags()
 {
-    mpSchedulerData->mbDelete = true;
-    mbActive = false;
+    mpImpl->mpSchedulerData->mbDelete = true;
+    mpImpl->mbActive = false;
+}
+
+void Task::SetPriority(TaskPriority ePriority)
+{
+    mpImpl->mePriority = ePriority;
+}
+
+TaskPriority Task::GetPriority() const
+{
+    return mpImpl->mePriority;
+}
+
+void Task::SetDebugName( const sal_Char *pDebugName )
+{
+    mpImpl->mpDebugName = pDebugName;
+}
+
+const char* Task::GetDebugName() const
+{
+    return mpImpl->mpDebugName;
 }
 
 void Task::Start()
@@ -320,14 +361,14 @@ void Task::Start()
     DBG_TESTSOLARMUTEX();
 
     // Mark timer active
-    mbActive = true;
+    mpImpl->mbActive = true;
 
-    if ( !mpSchedulerData )
+    if ( !mpImpl->mpSchedulerData )
     {
         // insert Task
-        mpSchedulerData                = new ImplSchedulerData;
-        mpSchedulerData->mpTask        = this;
-        mpSchedulerData->mbInScheduler = false;
+        mpImpl->mpSchedulerData                = new ImplSchedulerData;
+        mpImpl->mpSchedulerData->mpTask        = this;
+        mpImpl->mpSchedulerData->mbInScheduler = false;
 
         // insert last due to SFX!
         ImplSchedulerData* pPrev = nullptr;
@@ -337,29 +378,29 @@ void Task::Start()
             pPrev = pData;
             pData = pData->mpNext;
         }
-        mpSchedulerData->mpNext = nullptr;
+        mpImpl->mpSchedulerData->mpNext = nullptr;
         if ( pPrev )
-            pPrev->mpNext = mpSchedulerData;
+            pPrev->mpNext = mpImpl->mpSchedulerData;
         else
-            pSVData->maSchedCtx.mpFirstSchedulerData = mpSchedulerData;
+            pSVData->maSchedCtx.mpFirstSchedulerData = mpImpl->mpSchedulerData;
         SAL_INFO( "vcl.schedule", tools::Time::GetSystemTicks()
-                  << " " << mpSchedulerData << "  added      " << *this );
+                  << " " << mpImpl->mpSchedulerData << "  added      " << *this );
     }
     else
         SAL_INFO( "vcl.schedule", tools::Time::GetSystemTicks()
-                  << " " << mpSchedulerData << "  restarted  " << *this );
+                  << " " << mpImpl->mpSchedulerData << "  restarted  " << *this );
 
-    mpSchedulerData->mbDelete      = false;
-    mpSchedulerData->mnUpdateTime  = tools::Time::GetSystemTicks();
+    mpImpl->mpSchedulerData->mbDelete      = false;
+    mpImpl->mpSchedulerData->mnUpdateTime  = tools::Time::GetSystemTicks();
 }
 
 void Task::Stop()
 {
-    SAL_INFO_IF( mbActive, "vcl.schedule", tools::Time::GetSystemTicks()
-                  << " " << mpSchedulerData << "  stopped    " << *this );
-    mbActive = false;
-    if ( mpSchedulerData )
-        mpSchedulerData->mbDelete = true;
+    SAL_INFO_IF( mpImpl->mbActive, "vcl.schedule", tools::Time::GetSystemTicks()
+                  << " " << mpImpl->mpSchedulerData << "  stopped    " << *this );
+    mpImpl->mbActive = false;
+    if ( mpImpl->mpSchedulerData )
+        mpImpl->mpSchedulerData->mbDelete = true;
 }
 
 Task& Task::operator=( const Task& rTask )
@@ -367,8 +408,8 @@ Task& Task::operator=( const Task& rTask )
     if ( IsActive() )
         Stop();
 
-    mbActive = false;
-    mePriority = rTask.mePriority;
+    mpImpl->mbActive = false;
+    mpImpl->mePriority = rTask.mpImpl->mePriority;
 
     if ( rTask.IsActive() )
         Start();
@@ -376,19 +417,18 @@ Task& Task::operator=( const Task& rTask )
     return *this;
 }
 
+bool Task::IsActive() const
+{
+    return mpImpl->mbActive;
+}
+
 Task::Task( const sal_Char *pDebugName )
-    : mpSchedulerData( nullptr )
-    , mpDebugName( pDebugName )
-    , mePriority( TaskPriority::HIGH )
-    , mbActive( false )
+    : mpImpl( new TaskImpl( pDebugName ) )
 {
 }
 
 Task::Task( const Task& rTask )
-    : mpSchedulerData( nullptr )
-    , mpDebugName( rTask.mpDebugName )
-    , mePriority( rTask.mePriority )
-    , mbActive( false )
+    : mpImpl( new TaskImpl( *rTask.mpImpl ) )
 {
     if ( rTask.IsActive() )
         Start();
@@ -396,11 +436,27 @@ Task::Task( const Task& rTask )
 
 Task::~Task()
 {
-    if ( mpSchedulerData )
+    if ( mpImpl->mpSchedulerData )
     {
-        mpSchedulerData->mbDelete = true;
-        mpSchedulerData->mpTask = nullptr;
+        mpImpl->mpSchedulerData->mbDelete = true;
+        mpImpl->mpSchedulerData->mpTask = nullptr;
     }
+}
+
+TaskImpl::TaskImpl( const sal_Char *pDebugName )
+    : mpSchedulerData( nullptr )
+    , mpDebugName( pDebugName )
+    , mePriority( TaskPriority::HIGH )
+    , mbActive( false )
+{
+}
+
+TaskImpl::TaskImpl( const TaskImpl& rTaskImpl )
+    : mpSchedulerData( nullptr )
+    , mpDebugName( rTaskImpl.mpDebugName )
+    , mePriority( rTaskImpl.mePriority )
+    , mbActive( false )
+{
 }
 
 /* vim:set shiftwidth=4 softtabstop=4 expandtab: */
