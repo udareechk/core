@@ -234,9 +234,18 @@ bool Scheduler::ProcessTaskScheduling()
 {
     ImplSVData *pSVData = ImplGetSVData();
     ImplSchedulerContext &rSchedCtx = pSVData->maSchedCtx;
-    sal_uInt64  nTime = tools::Time::GetSystemTicks();
-    if ( pSVData->mbDeInit || !HasPendingTasks( rSchedCtx, nTime ) )
+    sal_uInt64 nTime = tools::Time::GetSystemTicks();
+    if ( pSVData->mbDeInit || InfiniteTimeoutMs == rSchedCtx.mnTimerPeriod )
         return false;
+
+    if ( nTime < rSchedCtx.mnTimerStart + rSchedCtx.mnTimerPeriod )
+    {
+        SAL_WARN( "vcl.schedule", "we're to early - restart the timer!" );
+        UpdateSystemTimer( rSchedCtx,
+                           rSchedCtx.mnTimerStart + rSchedCtx.mnTimerPeriod - nTime,
+                           true, nTime );
+        return false;
+    }
 
     ImplSchedulerData* pSchedulerData = nullptr;
     ImplSchedulerData* pPrevSchedulerData = nullptr;
