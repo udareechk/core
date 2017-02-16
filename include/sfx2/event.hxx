@@ -67,6 +67,7 @@ enum class SfxEventHintId {
     SwEventFieldMerge,
     SwEventFieldMergeFinished,
     SwEventLayoutFinished,
+    SwEventMergeMailSend,
 };
 
 class SFX2_DLLPUBLIC SfxEventHint : public SfxHint

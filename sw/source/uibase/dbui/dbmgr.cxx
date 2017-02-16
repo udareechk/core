@@ -302,6 +302,7 @@ struct SwDBManager::SwDBManager_Impl
     rtl::Reference<SwDBManager::ConnectionDisposedListener_Impl> m_xDisposeListener;
     rtl::Reference<SwDataSourceRemovedListener> m_xDataSourceRemovedListener;
     osl::Mutex                    m_aAllEmailSendMutex;
+    sal_uInt32                      m_nMessageSend;
     uno::Reference< mail::XMailMessage> m_xLastMessage;
 
     explicit SwDBManager_Impl(SwDBManager& rDBManager)
@@ -1094,6 +1095,7 @@ public:
         osl::MutexGuard aGuard( m_rDBManager.pImpl->m_aAllEmailSendMutex );
         if ( m_rDBManager.pImpl->m_xLastMessage == xMessage )
             m_rDBManager.pImpl->m_xLastMessage.clear();
+        ++m_rDBManager.pImpl->m_nMessageSend;
     }
 
     virtual void mailDeliveryError( ::rtl::Reference<MailDispatcher> xMailDispatcher,
@@ -1105,6 +1107,17 @@ public:
         xMailDispatcher->stop();
     }
 };
+
+static void lcl_NotifySendMails( sal_uInt32 &rMessageSend, sal_uInt32 &rMessageNotified,
+                                 SfxObjectShell* pDocShell )
+{
+    while ( rMessageSend > rMessageNotified )
+    {
+        lcl_emitEvent( SfxEventHintId::SwEventMergeMailSend,
+            STR_SW_EVENT_MERGE_MAIL_SEND, pDocShell );
+        ++rMessageNotified;
+    }
+}
 
 /**
  * Please have a look at the README in the same directory, before you make
@@ -1156,6 +1169,7 @@ bool SwDBManager::MergeMailFiles(SwWrtShell* pSourceShell,
     ::rtl::Reference< IMailDispatcherListener > xMailListener;
     OUString                            sMailBodyMimeType;
     rtl_TextEncoding                    sMailEncoding = ::osl_getThreadTextEncoding();
+    sal_uInt32                            nMessageNotified = 0;
 
     uno::Reference< beans::XPropertySet > xColumnProp;
 
@@ -1183,6 +1197,7 @@ bool SwDBManager::MergeMailFiles(SwWrtShell* pSourceShell,
         {
             // Reset internal mail accounting data
             pImpl->m_xLastMessage.clear();
+            pImpl->m_nMessageSend = 0;
 
             xMailDispatcher.set( new MailDispatcher(rMergeDescriptor.xSmtpServer) );
             xMailListener = new MailDispatcherListener_Impl( *this );
@@ -1541,6 +1556,9 @@ bool SwDBManager::MergeMailFiles(SwWrtShell* pSourceShell,
             }
         }
 
+        if ( bMT_EMAIL )
+            lcl_NotifySendMails( pImpl->m_nMessageSend, nMessageNotified, xWorkDocSh );
+
         bWorkDocInitialized = true;
         nDocNo++;
         nEndRow = pImpl->pMergeData ? pImpl->pMergeData->xResultSet->getRow() : 0;
@@ -1647,6 +1665,7 @@ bool SwDBManager::MergeMailFiles(SwWrtShell* pSourceShell,
 
     if( xMailDispatcher.is() )
     {
+        lcl_NotifySendMails( pImpl->m_nMessageSend, nMessageNotified, xWorkDocSh );
         if( IsMergeOk() )
         {
             // TODO: Instead of polling via an AutoTimer, post an Idle event,
@@ -1657,7 +1676,10 @@ bool SwDBManager::MergeMailFiles(SwWrtShell* pSourceShell,
             aEmailDispatcherPollTimer.SetTimeout( 500 );
             aEmailDispatcherPollTimer.Start();
             while( IsMergeOk() && pImpl->m_xLastMessage.is() )
+            {
                 Application::Yield();
+                lcl_NotifySendMails( pImpl->m_nMessageSend, nMessageNotified, xWorkDocSh );
+            }
             aEmailDispatcherPollTimer.Stop();
         }
         xMailDispatcher->stop();
